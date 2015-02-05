@@ -8,7 +8,7 @@ Requires: docopt, lxml, yaml, requests
 Usage:
     ipplan.py download URL (BASE_INDEX ...) [--path=PATH] [--user=USER] [--pass=PASS] [--block=BLOCK ...] [-v]
     ipplan.py parse PATH (BASE_INDEX ...) [-v] [--file=FILE]
-    ipplan.py dhcp PATH (BASE_INDEX ...) [-v] [--all] [--file=FILE]
+    ipplan.py dhcp PATH (BASE_INDEX ...) [-v] [--all] [--file=FILE] [--indent=INDENT] [--sort-ip]
 
 Options:
     BASE_INDEX          The `base_index` from the URL
@@ -17,6 +17,8 @@ Options:
     --user=USER         Username (authentication not used if unspecified)
     --pass=PASSWORD     IPPlan password (prompted for if not set)
     --file=FILE         File to save to
+    --indent=INDENT     Spaces to indent the output [Default: 0].
+    --sort-ip           Sort by IP address instead of by hostname
     -v                  Verbose mode
 
 Example:
@@ -45,6 +47,7 @@ import struct
 from docopt import docopt
 from collections import OrderedDict
 import requests
+import operator
 import yaml
 
 import lxml
@@ -278,7 +281,7 @@ def parse_block(fn):
     return rows
 
 
-def write_host(ip, info, f=None):
+def write_host(ip, info, f=None, indent=0):
     desc = info.get('descrip', '')
     host = info.get('hname', None)
     mac = info.get('macaddr', None)
@@ -289,7 +292,7 @@ def write_host(ip, info, f=None):
 
     valid = (host and mac and ip)
 
-    ret = ['host %s {' % host]
+    ret = ['host %s {' % host.split('.')[0]]
     if desc:
         ret.append('    # Description:' % desc)
     if loc:
@@ -309,6 +312,9 @@ def write_host(ip, info, f=None):
     if not valid:
         ret = [' '.join(('#', line)) for line in ret]
 
+    if indent > 0:
+        ret = [''.join((' ' * indent, line)) for line in ret]
+
     if f is not None:
         for line in ret:
             print(line, file=f)
@@ -316,14 +322,27 @@ def write_host(ip, info, f=None):
     return ret
 
 
-def create_dhcpd_conf(path, f=sys.stdout, include_all=False):
+def create_dhcpd_conf(path, f=sys.stdout, include_all=False,
+                      sort_host=True, indent=0):
     data = parse_ips(path, indices)
 
-    for index in indices:
-        for ip, ip_info in data[index].items():
-            if (ip_info['hname'] and ip_info['macaddr']) or include_all:
-                write_host(ip, ip_info, f=f)
-                print('', file=f)
+    def get_ips():
+        hosts = {}
+        for index in indices:
+            for ip, ip_info in data[index].items():
+                if (ip_info['hname'] and ip_info['macaddr']) or include_all:
+                    if sort_host:
+                        hosts[ip_info['hname']] = (ip, ip_info)
+                    else:
+                        yield ip, ip_info
+
+        if sort_host:
+            for host, (ip, ip_info) in sorted(hosts.items(), key=operator.itemgetter(0)):
+                yield ip, ip_info
+
+    for ip, ip_info in get_ips():
+        write_host(ip, ip_info, f=f, indent=indent)
+        print('', file=f)
 
 
 if __name__ == '__main__':
@@ -369,10 +388,12 @@ if __name__ == '__main__':
     elif args['dhcp']:
         indices = [int(index) for index in args['BASE_INDEX']]
         out_fn = args['--file']
+        indent = int(args['--indent'])
 
         if out_fn:
             f = open(out_fn, 'wt')
         else:
             f = sys.stdout
 
-        create_dhcpd_conf(args['PATH'], f=f, include_all=args['--all'])
+        create_dhcpd_conf(args['PATH'], f=f, include_all=args['--all'],
+                          indent=indent, sort_host=not args['--sort-ip'])
